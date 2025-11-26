@@ -1,50 +1,78 @@
 # Optiver-x-HackaTUM
-Write up for the Optiver x HackaTUM challenge 2025
+Write up for the Optiver x HackaTUM challenge 2025.
+
+HackaTUM is a 3 day hackathon with numerous sponsors including Optiver, IMC Trading, Sixt, Logitech, and many others. Originally our team had intended on competing in both the Optiver and IMC challenge at the same time (with previous clearance from the HackaTUM staff) but this rule kept getting changed or removed for us over the first 24 hours making our progress in both challenges inefficient due to constant rule changes. On the second day we decided to primarily focus on the Optiver challenge in order to not waste anymore time.
 
 ## Introduction
 
-This project was built for the HackaTUM 2025 Optibook challenge. The setting is a simulated electronic exchange with five stocks, each dual-listed on two venues, traded simultaneously by human teams and background bots. In addition to the limit order books, a live news channel injects stock-specific and market-wide headlines that can move prices. Our goal was to design an automated trader that starts as a robust market maker, then progressively layers in news-awareness, cross-listing arbitrage, inventory control, and finally sentiment-driven directional trading. The core implementation lives in `MidMMPrimaryBot` in `main.py`. :contentReference[oaicite:0]{index=0}  
+This project was built for the HackaTUM 2025 Optibook challenge. The setting is a simulated electronic market with five stocks, each dual-listed on two venues and traded against other teams as well as built-in bots. In addition to the limit order books, a live news channel publishes stock-specific and global headlines that can move prices. Our goal was to design an automated trader that starts as a robust, neutral market maker and then layers in news-awareness, cross-listing arbitrage, inventory control, and finally sentiment-driven directional trading.
 
-We began with a mid-price market making engine. For each instrument we compute a VWAP mid from both sides of the book,
-\[
-\text{VWAP}_\text{bid} = 
+Our first step was a mid-price market-making engine that tries to capture the spread as often as possible. For each order book we compute a VWAP mid price from both sides
+
+$$
+\text{VWAP}_{\text{bid}} =
 \frac{\sum_i p_i^{(b)} q_i^{(b)}}{\sum_i q_i^{(b)}},
 \qquad
-\text{VWAP}_\text{ask} = 
+\text{VWAP}_{\text{ask}} =
 \frac{\sum_j p_j^{(a)} q_j^{(a)}}{\sum_j q_j^{(a)}},
-\]
-\[
-m_t = \frac{\text{VWAP}_\text{bid} + \text{VWAP}_\text{ask}}{2},
-\]
-and quote symmetrically around this fair value with a half-spread \(s_t\),
-\[
-b_t = m_t - s_t, \qquad a_t = m_t + s_t.
-\]
-Whenever we buy at \(b_t\) and subsequently sell at \(a_t\), the pure spread capture per share is
-\[
-\text{PnL}_\text{spread} = a_t - b_t = 2s_t,
-\]
-so our first objective was simply to maximise the number of such round trips while staying passive and within position limits.
+$$
 
-The news feed is then used to adapt our risk and pricing. Stock-specific headlines widen the half-spread for the affected name, while global macro headlines widen spreads across all instruments for a short window. Conceptually, our effective half-spread is
-\[
-s_t^\text{eff} = \max\bigl(s_\text{base},\; s_\text{stock\_news}(t),\; s_\text{global\_news}(t),\; \tfrac12(a_t^\text{book}-b_t^\text{book})\bigr),
-\]
-making us more conservative exactly when uncertainty is high, but still allowing us to tighten up when the book itself is tight.
+and define
 
-With five dual-listed stocks, the next step was to exploit cross-venue arbitrage. For stock \(i\) we track mid prices on venue A and B, \(m_t^{(i,A)}\) and \(m_t^{(i,B)}\), and define the instantaneous mispricing
-\[
+$$
+m_t = \frac{\text{VWAP}_{\text{bid}} + \text{VWAP}_{\text{ask}}}{2}.
+$$
+
+Around this fair value we quote a symmetric half-spread \(s_t\),
+
+$$
+b_t = m_t - s_t, \qquad a_t = m_t + s_t,
+$$
+
+so that a round-trip buy at \(b_t\) and sell at \(a_t\) locks in
+
+$$
+\text{PnL}_\text{spread} = a_t - b_t = 2s_t
+$$
+
+per share, as long as we stay passive and within our position limits.
+
+The news feed is then used to adapt both our risk and our pricing. Stock-specific headlines widen the half-spread for the affected instrument, while global headlines widen spreads for all stocks for a short window. Conceptually, our effective half-spread becomes
+
+$$
+s_t^{\text{eff}} =
+\max\!\left(
+s_{\text{base}},
+s_{\text{stock}}(t),
+s_{\text{global}}(t),
+\frac{1}{2}\bigl(a_t^{\text{book}} - b_t^{\text{book}}\bigr)
+\right),
+$$
+
+making us more conservative precisely when uncertainty is high, but still allowing us to tighten up when the book itself is tight.
+
+With five dual-listed stocks, the next layer is cross-venue arbitrage. For stock \(i\) we track mid prices \(m_t^{(i,A)}\) and \(m_t^{(i,B)}\) on venues A and B and define the mispricing
+
+$$
 \Delta_t^{(i)} = m_t^{(i,A)} - m_t^{(i,B)}.
-\]
-When \(|\Delta_t^{(i)}| > \theta\) for a threshold \(\theta\) covering fees and noise, we lock in the discrepancy by buying the cheap venue and selling the expensive one:
-\[
-\text{if } \Delta_t^{(i)} > \theta: \quad \text{sell on A, buy on B}, \qquad
-\text{if } \Delta_t^{(i)} < -\theta: \quad \text{buy on A, sell on B}.
-\]
-All of this interacts with an explicit inventory-skew term: if \(q_t^{(i)}\) is our inventory in stock \(i\), tick size is \(\Delta_\text{tick}\), and \(\alpha\) is a skew coefficient, our quoted fair value becomes
-\[
-\tilde m_t^{(i)} = m_t^{(i)} - \alpha\, q_t^{(i)}\, \Delta_\text{tick},
-\]
-pushing quotes away from our current position so that the market naturally helps us mean-revert towards flat.
+$$
 
-Finally, once the base market making and arbitrage layers were stable, we added a lightweight sentiment-trading overlay. Each news message is mapped to a ticker and a sentiment score \(s_t \in [-1,1]\). Positive sentiment nudges the fair value and inventory target upwards, negative sentiment downwards, effectively adding a directional alpha term on top of our neutral market-making engine while still respecting the same risk and inventory controls.
+Whenever \(|\Delta_t^{(i)}| > \theta\) for a threshold \(\theta\) that covers fees and noise, we trade the spread by buying the cheap venue and selling the expensive one:
+
+- if \(\Delta_t^{(i)} > \theta\): sell on A, buy on B;
+- if \(\Delta_t^{(i)} < -\theta\): buy on A, sell on B.
+
+All of this is controlled by an explicit inventory skew. Let \(q_t^{(i)}\) be our inventory in stock \(i\), \(\Delta_{\text{tick}}\) the tick size, and \(\alpha\) a skew coefficient. We shift our fair value by
+
+$$
+\tilde m_t^{(i)} = m_t^{(i)} - \alpha \, q_t^{(i)} \, \Delta_{\text{tick}},
+$$
+
+which pushes our quotes away from our current position and encourages the market to help us mean-revert back towards flat.
+
+Once the base market-making, news reaction, and arbitrage layers were stable, we added a final sentiment-trading overlay. Each news item is mapped to a ticker and a sentiment score \(s_t^{(i)} \in [-1,1]\). Positive sentiment nudges the fair value and inventory target upward, negative sentiment pushes them down, effectively adding a small directional alpha term on top of our otherwise neutral market-making engine while keeping the same risk and inventory controls.
+
+
+
+## Final Notes
+Firstly a massive thank you to the Optiver team for organising and running this challenge and we look forward to competing (and hopefully winning) next year. I'd also like to thank the hosts of HackaTUM for the large amount of effort and logistics required to run such an event.
